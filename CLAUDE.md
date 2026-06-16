@@ -1,155 +1,264 @@
 # Platziflix - Proyecto Multi-plataforma
 
-## Arquitectura del Sistema
+## Reglas de Desarrollo (LEER PRIMERO)
 
-Platziflix es una plataforma de cursos online con arquitectura multi-plataforma que incluye:
-- **Backend**: API REST con FastAPI + PostgreSQL
-- **Frontend**: Aplicación web con Next.js 15
-- **Mobile**: Apps nativas Android (Kotlin) + iOS (Swift)
+1. **Docker obligatorio** para el backend. Antes de ejecutar cualquier comando de backend, verifica que el contenedor esté corriendo con `docker ps` y usa los comandos del Makefile (`make start`, `make migrate`, etc.) — nunca ejecutes Python directamente.
+2. **API REST** es la única fuente de datos para Frontend y Mobile. No hay estado compartido entre clientes.
+3. **Soft deletes globales**: nunca uses `DELETE` SQL directo. Todos los modelos tienen `deleted_at`; filtrar siempre con `.filter(Model.deleted_at.is_(None))`.
+4. **Testing requerido** para nuevas funcionalidades en los tres proyectos.
+5. **Migraciones Alembic** para cualquier cambio de schema de BD (`make create-migration` + `make migrate`).
+6. **Convenciones de naming**: `snake_case` (Python), `camelCase` (JS/TS), `PascalCase` (Swift/Kotlin).
+7. **TypeScript strict** en Frontend — no usar `any`.
+
+---
+
+## Arquitectura General
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  WEB (Next.js 15)    ANDROID (Kotlin)       iOS (Swift)         │
+│  localhost:3000       Native App             Native App          │
+└──────────┬───────────────────┬──────────────────────┬───────────┘
+           │                   │                      │
+           └───────────────────┴──────────────────────┘
+                               │ HTTP REST JSON
+                               ▼
+           ┌──────────────────────────────────────┐
+           │   BACKEND FastAPI — localhost:8000   │
+           └───────────────────┬──────────────────┘
+                               │ SQLAlchemy 2.0 ORM
+                               ▼
+           ┌──────────────────────────────────────┐
+           │   PostgreSQL 15 (Docker) — port 5432 │
+           └──────────────────────────────────────┘
+```
+
+**Principio clave**: el Backend es la única fuente de verdad. Frontend y Mobile consumen la misma API REST; no se comunican entre sí.
+
+---
 
 ## Stack Tecnológico
 
-### Backend (FastAPI/Python)
+### Backend
 - **Framework**: FastAPI
-- **Base de datos**: PostgreSQL 15
 - **ORM**: SQLAlchemy 2.0
 - **Migraciones**: Alembic
-- **Container**: Docker + Docker Compose
-- **Gestión dependencias**: UV
+- **BD**: PostgreSQL 15 (vía Docker)
+- **Dependencias**: UV (pyproject.toml)
 - **Puerto**: 8000
 
-### Frontend (Next.js)
+### Frontend
 - **Framework**: Next.js 15 (App Router)
-- **React**: 19.0
-- **Lenguaje**: TypeScript
+- **React**: 19.0 — TypeScript strict
 - **Estilos**: SCSS + CSS Modules
 - **Testing**: Vitest + React Testing Library
-- **Fonts**: Geist Sans & Geist Mono
+- **Fuentes**: Geist Sans & Geist Mono
 
 ### Mobile
-- **Android**: Kotlin + Jetpack Compose + Retrofit
-- **iOS**: Swift + SwiftUI + Repository Pattern
+- **Android**: Kotlin + Jetpack Compose + Retrofit + Hilt (DI)
+- **iOS**: Swift + SwiftUI + URLSession
 
-## Estructura del Proyecto
+---
 
+## Estructura de Archivos Clave
+
+### Backend (`Backend/app/`)
 ```
-claude-code/
-├── Backend/           # API FastAPI + PostgreSQL
-├── Frontend/          # Next.js 15 App
-└── Mobile/
-    ├── PlatziFlixAndroid/  # Kotlin App
-    └── PlatziFlixiOS/      # Swift App
+main.py                     ← Entrypoint: rutas HTTP + inyección de dependencias
+core/config.py              ← Settings (nombre, versión, DATABASE_URL)
+db/base.py                  ← engine, SessionLocal, get_db()
+db/seed.py                  ← Datos de prueba
+models/base.py              ← BaseModel: id, created_at, updated_at, deleted_at
+models/course.py            ← Course (name, slug, thumbnail, description, ratings)
+models/teacher.py           ← Teacher
+models/lesson.py            ← Lesson (video_url, slug, course_id FK)
+models/class_.py            ← Class
+models/course_teacher.py    ← Tabla pivot Many-to-Many Course ↔ Teacher
+models/course_rating.py     ← CourseRating (rating 1-5, soft delete, user_id)
+schemas/rating.py           ← Pydantic: RatingRequest, RatingResponse, RatingStatsResponse
+services/course_service.py  ← Service Layer: toda la lógica de negocio y queries
+alembic/versions/           ← Migraciones (d18a... schema inicial, 0e3a... ratings)
 ```
+
+### Frontend (`Frontend/src/`)
+```
+app/page.tsx                        ← Home: grid Netflix de cursos (Server Component)
+app/course/[slug]/page.tsx          ← Detalle de curso (Server Component)
+app/classes/[class_id]/page.tsx     ← Reproductor de video
+components/Course/                  ← Tarjeta de curso (thumbnail + estrella rating)
+components/CourseDetail/            ← Vista detalle (info + lista de clases)
+components/StarRating/              ← Componente interactivo 1-5 estrellas
+components/VideoPlayer/             ← Reproductor embebido
+services/ratingsApi.ts              ← Cliente HTTP completo para ratings (CRUD)
+types/index.ts                      ← Course, Class, CourseDetail, Progress, Quiz, FavoriteToggle
+types/rating.ts                     ← CourseRating, RatingStats, RatingRequest, ApiError
+```
+
+### Mobile Android (`Mobile/PlatziFlixAndroid/app/src/main/java/.../`)
+```
+presentation/courses/viewmodel/CourseListViewModel.kt   ← MVVM/MVI con StateFlow
+presentation/courses/screen/CourseListScreen.kt         ← UI Compose
+presentation/courses/state/CourseListUiState.kt         ← Estado UI
+presentation/courses/components/                        ← CourseCard, Loading, Error
+domain/models/Course.kt                                 ← Modelo de dominio
+domain/repositories/CourseRepository.kt                 ← Interfaz del repositorio
+data/entities/CourseDTO.kt                              ← Entity de red (Retrofit)
+data/mappers/CourseMapper.kt                            ← DTO → Domain
+data/repositories/RemoteCourseRepository.kt             ← Implementación real (API)
+data/repositories/MockCourseRepository.kt               ← Implementación mock (dev offline)
+data/network/ApiService.kt                              ← Interface Retrofit
+data/network/NetworkModule.kt                           ← Config Retrofit
+di/AppModule.kt                                         ← Hilt DI Module
+```
+
+### Mobile iOS (`Mobile/PlatziFlixiOS/PlatziFlixiOS/`)
+```
+Presentation/ViewModels/CourseListViewModel.swift       ← MVVM con @Published
+Presentation/Views/CourseListView.swift                 ← UI SwiftUI
+Presentation/Views/CourseCardView.swift                 ← Tarjeta de curso
+Presentation/Views/DesignSystem.swift                   ← Tokens de diseño
+Domain/Models/Course.swift, Teacher.swift, Class.swift  ← Modelos de dominio
+Domain/Repositories/CourseRepositoryProtocol.swift      ← Protocolo repositorio
+Data/Entities/CourseDTO.swift, TeacherDTO.swift, ClassDetailDTO.swift ← Network entities
+Data/Mapper/CourseMapper.swift, TeacherMapper.swift, ClassMapper.swift ← DTO → Domain
+Data/Repositories/RemoteCourseRepository.swift          ← Implementación API
+Data/Repositories/CourseAPIEndpoints.swift              ← Enum de endpoints
+Services/NetworkManager.swift                           ← URLSession wrapper
+Services/NetworkService.swift                           ← Protocolo de red
+Services/APIEndpoint.swift                              ← Protocolo de endpoint
+```
+
+---
 
 ## Modelo de Datos
 
-### Entidades Principales
-- **Course**: Cursos (name, description, thumbnail, slug)
-- **Teacher**: Profesores
-- **Lesson**: Lecciones de un curso
-- **Class**: Clases individuales de una lección
+```
+BaseModel (abstracto)
+  └── id (PK), created_at, updated_at, deleted_at (soft delete)
 
-### Relaciones
-- Course ↔ Teacher (Many-to-Many via course_teachers)
-- Course → Lesson (One-to-Many)
-- Lesson → Class (One-to-Many)
+Course ──────────────────────────────── CourseRating
+  id, name, slug (unique+index),           id, course_id (FK), user_id,
+  description, thumbnail (URL)             rating (INT, CHECK 1-5), deleted_at
+       │
+       ├── M:M via course_teachers ──── Teacher
+       │                                  id, name, ...
+       │
+       └── 1:N ───────────────────────── Lesson
+                                          id, course_id (FK), name,
+                                          slug, description, video_url
+```
 
-## API Endpoints
+**Regla de ratings**: un usuario solo puede tener un rating activo por curso. El `POST /courses/{id}/ratings` implementa lógica upsert: actualiza si ya existe, crea si no existe.
 
-- `GET /` - Bienvenida
-- `GET /health` - Health check + DB connectivity
-- `GET /courses` - Lista todos los cursos
-- `GET /courses/{slug}` - Detalle de curso por slug
+---
+
+## API Endpoints Completos
+
+### Cursos
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/` | Bienvenida |
+| GET | `/health` | Estado del servicio + conectividad DB |
+| GET | `/courses` | Lista de cursos (incluye `average_rating`, `total_ratings`) |
+| GET | `/courses/{slug}` | Detalle con teachers, lessons y rating stats |
+| GET | `/classes/{class_id}` | Detalle de clase/lección con `video_url` |
+
+### Ratings
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/courses/{course_id}/ratings` | Crear o actualizar rating (upsert) |
+| GET | `/courses/{course_id}/ratings` | Listar todos los ratings activos |
+| GET | `/courses/{course_id}/ratings/stats` | Stats: `average_rating`, `total_ratings`, `rating_distribution` |
+| GET | `/courses/{course_id}/ratings/user/{user_id}` | Rating de un usuario (204 si no existe) |
+| PUT | `/courses/{course_id}/ratings/{user_id}` | Actualizar rating existente (falla si no existe) |
+| DELETE | `/courses/{course_id}/ratings/{user_id}` | Soft delete del rating |
+
+---
+
+## Patrones de Desarrollo
+
+### Backend
+- **Capas**: `main.py` (HTTP) → `CourseService` (lógica) → SQLAlchemy models (datos)
+- **DI**: `Depends(get_course_service)` inyecta `CourseService(db)` en cada request
+- **Agregaciones en SQL**: las stats de ratings se calculan con `func.avg` / `func.count` en la BD, no en Python
+- **Soft deletes**: siempre filtrar `.filter(Model.deleted_at.is_(None))` en queries
+
+### Frontend
+- **Server Components** por defecto: el data fetching ocurre en el servidor con `fetch()` directo
+- **Client Components** solo para interactividad: `StarRating` usa estado del cliente
+- **ratingsApi.ts**: servicio con `fetchWithTimeout` (10s), manejo de errores tipados con `ApiError`
+- **Tipos futuros en `types/index.ts`**: `Progress`, `Quiz`, `QuizOption`, `FavoriteToggle` están definidos pero **no tienen endpoints en el backend todavía**
+
+### Mobile (ambas plataformas)
+- **Arquitectura en capas**: Presentation → Domain → Data (Clean Architecture)
+- **Mappers explícitos**: los DTOs de red nunca se exponen al dominio; siempre se mapean
+- **Android diferencial**: tiene `MockCourseRepository` para desarrollo sin API; usa Hilt para DI
+- **iOS diferencial**: mappers más granulares (Teacher, Class, Course separados); usa URLSession directamente sin Retrofit
+
+---
+
+## Infraestructura Docker
+
+```yaml
+# Backend/docker-compose.yml
+services:
+  db:    postgres:15 → port 5432, volumen persistente
+  api:   FastAPI     → port 8000, volume mount ./app (hot-reload)
+         env DATABASE_URL: postgresql://platziflix_user:platziflix_password@db:5432/platziflix_db
+```
+
+---
 
 ## Comandos de Desarrollo
 
 ### Backend
 ```bash
 cd Backend
-make start        # Iniciar Docker Compose
-make stop         # Detener containers
-make migrate      # Ejecutar migraciones
-make seed         # Poblar datos de prueba
-make logs         # Ver logs
+make start           # Levantar Docker Compose (db + api)
+make stop            # Detener containers
+make logs            # Ver logs de todos los servicios
+make migrate         # Aplicar migraciones Alembic
+make create-migration # Crear nueva migración
+make seed            # Poblar datos de prueba
+make seed-fresh      # Reset completo + seed
 ```
 
 ### Frontend
 ```bash
 cd Frontend
-yarn dev          # Servidor de desarrollo
-yarn build        # Build de producción
-yarn test         # Ejecutar tests
-yarn lint         # Linter
+yarn dev             # Servidor de desarrollo (localhost:3000)
+yarn build           # Build de producción
+yarn test            # Ejecutar tests (Vitest)
+yarn lint            # ESLint
 ```
+
+---
 
 ## URLs del Sistema
 
-- **Backend API**: http://localhost:8000
-- **Frontend Web**: http://localhost:3000
-- **API Docs**: http://localhost:8000/docs (FastAPI Swagger)
+| Servicio | URL |
+|---------|-----|
+| Frontend Web | http://localhost:3000 |
+| Backend API | http://localhost:8000 |
+| API Docs (Swagger) | http://localhost:8000/docs |
+| PostgreSQL | localhost:5432 |
 
-## Base de Datos
-
-### Configuración Docker
-- **Usuario**: platziflix_user
-- **Password**: platziflix_password
-- **Database**: platziflix_db
-- **Puerto**: 5432
-
-### Migraciones
-- Ubicación: `Backend/app/alembic/versions/`
-- Comando crear: `make create-migration`
-- Comando aplicar: `make migrate`
+---
 
 ## Funcionalidades Implementadas
 
 - ✅ Catálogo de cursos con grid estilo Netflix
-- ✅ Detalle de cursos (profesores, lecciones, clases)
+- ✅ Detalle de curso (profesores, lecciones, clases)
 - ✅ Navegación por slug SEO-friendly
 - ✅ Reproductor de video integrado
+- ✅ Sistema de ratings completo (CRUD + stats + distribución)
 - ✅ Health checks de API y DB
 - ✅ Apps móviles nativas (Android + iOS)
-- ✅ Testing en todos los componentes
+- ✅ Testing en Frontend y Backend
 
-## Patrones de Desarrollo
+## Funcionalidades Pendientes (tipos ya definidos en Frontend)
 
-### Backend
-- **Arquitectura**: Service Layer Pattern
-- **Dependency Injection**: FastAPI Dependencies
-- **Database**: Repository Pattern con SQLAlchemy
-
-### Frontend
-- **Routing**: Next.js App Router
-- **Data Fetching**: Server Components + fetch
-- **Styling**: CSS Modules + SCSS
-- **Testing**: Component testing con Vitest
-
-### Mobile
-- **Android**: MVVM + Jetpack Compose
-- **iOS**: SwiftUI + Repository + Mapper Pattern
-
-## Consideraciones de Desarrollo
-
-1. **Docker obligatorio** para el backend (DB + API)
-2. **TypeScript strict** en Frontend
-3. **Testing requerido** para nuevas funcionalidades
-4. **Migraciones automáticas** para cambios de DB
-5. **Convenciones de naming**: snake_case (Python), camelCase (JS/TS), PascalCase (Swift/Kotlin)
-6. **API REST** como única fuente de datos para Frontend/Mobile
-
-## Comandos Útiles
-
-```bash
-# Desarrollo completo
-cd Backend && make start    # Iniciar backend
-cd Frontend && yarn dev     # Iniciar frontend
-
-# Reset completo de datos
-cd Backend && make seed-fresh
-
-# Ver logs de todos los servicios
-cd Backend && make logs
-```
-
-Esta memoria contiene toda la información necesaria para continuar el desarrollo del proyecto Platziflix.
-- Cualquier comando que necesites ejecutar para el Backend debe ser dentro del contenedor de docker API, antes de ejecutarlo certifica que esté funcionando el contenedor y revisa el archivo makefile con los comandos que existen y úsalos
+- ⬜ Progreso de usuario (`Progress` en `types/index.ts`)
+- ⬜ Quizzes por clase (`Quiz`, `QuizOption` en `types/index.ts`)
+- ⬜ Favoritos (`FavoriteToggle` en `types/index.ts`)
+- ⬜ Rating interactivo en Mobile (actualmente solo Web tiene StarRating)
