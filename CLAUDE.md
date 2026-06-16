@@ -1,6 +1,6 @@
 # Platziflix - Proyecto Multi-plataforma
 
-## Reglas de Desarrollo (LEER PRIMERO)
+## Reglas de Desarrollo
 
 1. **Docker obligatorio** para el backend. Antes de ejecutar cualquier comando de backend, verifica que el contenedor esté corriendo con `docker ps` y usa los comandos del Makefile (`make start`, `make migrate`, etc.) — nunca ejecutes Python directamente.
 2. **API REST** es la única fuente de datos para Frontend y Mobile. No hay estado compartido entre clientes.
